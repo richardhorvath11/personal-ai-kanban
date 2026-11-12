@@ -75,7 +75,7 @@ export function install(project: string, opts: { url?: string; dataDir?: string;
       for (const g of groups) g.hooks = (g.hooks ?? []).filter((h: any) => !isOurHook(h));
       settings.hooks[event] = groups.filter((g) => g.hooks.length);
       settings.hooks[event].push(group);
-      hookCommands.push(`${event}:${group.hooks[0].args?.[1]}`);
+      hookCommands.push(`${event}:${group.hooks[0].args?.[1] ?? ''}`);
     }
     writeJson(sFile, settings);
     touched.push(sFile);

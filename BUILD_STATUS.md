@@ -1,7 +1,7 @@
 # BUILD_STATUS
 
 ## Current slice
-Slice 2 — Session continuity: **complete**. Next: Slice 3 (automatic maintenance and recovery).
+Slice 3 — Automatic maintenance and recovery: **complete** (fixture-verified; live Claude Code run pending). Next: Slice 4 (attention and priority).
 
 ## Completed behavior
 - SQLite data model (tasks, deps, activity log, idempotency ledger) with numbered migrations in `migrations/`, applied on open and via `npm run migrate`.
@@ -14,6 +14,14 @@ Slice 2 — Session continuity: **complete**. Next: Slice 3 (automatic maintenan
 - **Slice 2:** `sessions` / `session_tasks` tables (migration 002). Sessions are agent activity, separate from task status. MCP tools `get_session_context`, `link_session` (several tasks + explicit current task; switching updates it), `record_checkpoint` (atomic summary/next action/findings/links/checklist/status, findings attributed per session and append-only). A checkpoint with no current task and several (or zero) linked tasks fails with `ambiguous_target` + candidates instead of guessing.
 - Session id discovery: explicit `sessionId`, `KANBAN_SESSION_ID`, or the runtime pid map written by the SessionStart hook (`<data>/runtime/claude-pid/<claude-pid>.json`, looked up by walking the adapter's parent processes).
 - Project-scoped installer `npm run kanban -- install --project DIR` merges `.mcp.json`, `.claude/settings.json` hooks and a marked `CLAUDE.md` block (backups in `.claude/kanban-backups/`); `uninstall` removes exactly those entries. Global `~/.claude/settings.json` is never touched.
+
+- **Slice 3:** lifecycle hook `src/hooks/hook.ts` (exec-form command hooks, schema checked against code.claude.com/docs/en/hooks for Claude Code 2.1.310):
+  - `SessionStart` (startup|resume|clear|compact): registers the session, writes the pid map, drains the outbox, injects session id + current task / repo candidates as `additionalContext`.
+  - `PostToolUse` (Edit|Write|MultiEdit|NotebookEdit): local-only dirty marker (no network, no model call).
+  - `Stop`: drains outbox, sends a sync heartbeat (not meaningful progress), and if files changed since the last confirmed checkpoint returns `additionalContext` asking Claude to `record_checkpoint` if the work was meaningful. Once per batch; `stop_hook_active` respected; never changes status.
+  - `SessionEnd`: best-effort session end (queued if offline); no status change.
+- Durable outbox `src/core/outbox.ts`: fsync + atomic rename files with op IDs; deleted only after acknowledgement; rejected ops move to `failed/` and are surfaced in `/api/health` + UI with Retry; the service drains on start-up, every 10 s and on demand. MCP `record_checkpoint` / `create_task` return `acknowledged: false, queued: true` when offline — never a fake success.
+- `kanban note T-n "text"` CLI for manual notes outside instrumented sessions (queues when offline).
 
 ## Technical decisions
 - **Node 24 native TypeScript** (type stripping) for service, MCP adapter, hooks and tests: no build step, fast hook start-up. Vite builds only the React UI.
@@ -33,8 +41,13 @@ Slice 2 — Session continuity: **complete**. Next: Slice 3 (automatic maintenan
 - `npx tsc -p .` → no errors.
 - `node --test test/02-session-continuity.test.ts` → 3 pass, 0 fail (two real MCP stdio sessions across a service restart; task switching; ambiguity; installer merge/uninstall round trip).
 
+## Commands actually run (slice 3)
+- `npx tsc -p .` → no errors. `npm test` → 10 tests, 10 pass, 0 fail.
+- Hook checks in `test/03-hooks-recovery.test.ts` are **fixture-based** (real hook processes fed JSON payloads shaped per the hooks reference); they are not a live Claude Code run.
+
 ## Known limitations / unverified
-- Hooks, outbox, background review and attention views not built yet (slices 3–4).
+- Live Claude Code hook test not yet run. Background review and attention views not built yet (slice 4).
 
 ## Next actions
-1. Slice 3: hook script (SessionStart/PostToolUse/Stop/SessionEnd), durable outbox with op IDs, drain on recovery, sync health in `/api/health` + UI, conflict handling tests.
+1. Slice 4: deadlines (relative date resolution), dependency readiness, background review (follow-ups, stale, review pending, pin conflicts), next-work explanations, attention view, docs.
+2. Run the live Claude Code test (`scripts/live-claude-test.sh`).

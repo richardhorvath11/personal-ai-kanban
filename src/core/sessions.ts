@@ -124,7 +124,7 @@ export class Sessions {
 
   /** Response-boundary heartbeat: proves the session is alive. Not meaningful progress. */
   heartbeat(sessionId: string) {
-    const s = this.require(sessionId);
+    const s = this.get(sessionId) ?? this.upsert({ sessionId });
     this.db.prepare('UPDATE sessions SET last_seen_at = ? WHERE id = ?').run(nowIso(), s.id);
     if (s.current_task_id) this.board.touchSynced(s.current_task_id);
     return { ok: true, currentTaskId: s.current_task_id, lastCheckpointAt: s.last_checkpoint_at };

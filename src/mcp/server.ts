@@ -8,6 +8,8 @@ import { KanbanClient, ServiceError, ServiceUnavailable } from '../core/client.t
 import { STATUSES } from '../core/types.ts';
 import type { Task } from '../core/types.ts';
 import { registerSessionTools } from './session-tools.ts';
+import { sendOrQueue } from '../core/deliver.ts';
+import { getOutbox } from './offline.ts';
 
 export const compact = (t: Task) => ({
   id: t.id, title: t.title, project: t.project, status: t.status, nextAction: t.nextAction || null,
@@ -91,8 +93,9 @@ export function buildServer(client: KanbanClient) {
     description: 'Create a durable task. Explicit requests/commitments may be created as ready; tentative ideas go to inbox. Always pass a fresh opId (UUID) and reuse it if you retry, so retries never duplicate.',
     inputSchema: { opId: z.string().min(8).describe('Unique operation ID; reuse on retry'), sessionId: z.string().optional(), sourceNote: z.string().max(500).optional().describe('Short note of the user instruction this came from'), ...taskFieldsShape, title: z.string().min(1).max(300) },
   }, wrap(async ({ opId, sessionId, sourceNote, ...fields }) => {
-    const r = await client.post<{ task: Task; duplicate: boolean }>('/api/tasks', { opId, sessionId, sourceNote, ...fields });
-    return { duplicate: r.duplicate, task: compact(r.task) };
+    const r = await sendOrQueue<{ task: Task; duplicate: boolean }>(client, getOutbox(), 'POST', '/api/tasks', { opId, sessionId, sourceNote, ...fields });
+    if (!r.acknowledged) return { acknowledged: false, queued: true, opId: r.opId, warning: r.message };
+    return { acknowledged: true, duplicate: r.result!.duplicate, task: compact(r.result!.task) };
   }));
 
   server.registerTool('edit_task', {

@@ -103,3 +103,31 @@ export async function browser() {
 export function ensureUiBuilt() {
   if (!fs.existsSync(path.join(ROOT, 'dist/ui/index.html'))) throw new Error('UI not built: run npm run build:ui before tests');
 }
+
+export async function freePort(): Promise<number> {
+  const net = await import('node:net');
+  return new Promise((resolve) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = (s.address() as any).port; s.close(() => resolve(p)); }); });
+}
+
+/** Run the real hook script as Claude Code would (JSON on stdin), returning parsed stdout. FIXTURE payloads — not a live Claude run. */
+export async function runHook(event: string, payload: Record<string, unknown>, o: { url: string; dataDir: string; env?: Record<string, string> }) {
+  const proc = spawn(process.execPath, [path.join(ROOT, 'src/hooks/hook.ts'), event, '--url', o.url, '--data-dir', o.dataDir], { env: { ...cleanEnv(), ...o.env }, stdio: ['pipe', 'pipe', 'pipe'] });
+  track(proc);
+  let out = '', err = '';
+  proc.stdout.on('data', (d) => (out += d));
+  proc.stderr.on('data', (d) => (err += d));
+  proc.stdin.end(JSON.stringify({ hook_event_name: event, ...payload }));
+  const started = Date.now();
+  const code = await new Promise<number>((r) => proc.on('exit', (c) => r(c ?? -1)));
+  return { code, out, err, json: out.trim() ? JSON.parse(out) : null, ms: Date.now() - started, pid: proc.pid };
+}
+
+export async function waitFor<T>(fn: () => Promise<T | null | undefined | false>, ms = 10000, step = 150): Promise<T> {
+  const until = Date.now() + ms;
+  for (;;) {
+    const v = await fn();
+    if (v) return v;
+    if (Date.now() > until) throw new Error('waitFor timed out');
+    await new Promise((r) => setTimeout(r, step));
+  }
+}
