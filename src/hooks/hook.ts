@@ -5,18 +5,21 @@
 // Every path is bounded, never blocks normal coding when the board is offline, and never changes task status.
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { KanbanClient, ServiceUnavailable } from '../core/client.ts';
 import { Outbox, drain } from '../core/outbox.ts';
 import { httpSender, sendOrQueue } from '../core/deliver.ts';
-import { recordSessionPid, runtimeDir, writeAtomic } from '../core/runtime.ts';
+import { dataDirFromEnv, recordSessionPid, runtimeDir, writeAtomic } from '../core/runtime.ts';
+import { hasProjectInstall, isIgnored, kanbanDisabled, resolveProject } from '../core/project.ts';
 
 const argv = process.argv.slice(2);
 const event = argv[0];
 const opt = (n: string) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : undefined; };
 if (opt('--data-dir')) process.env.KANBAN_DATA_DIR = opt('--data-dir');
 const url = opt('--url') ?? process.env.KANBAN_URL ?? `http://127.0.0.1:${process.env.KANBAN_PORT || 4317}`;
-const dataDir = path.resolve(process.env.KANBAN_DATA_DIR || '');
+const dataDir = dataDirFromEnv();
+// 'global' = registered in ~/.claude/settings.json for every project; 'project' = the older per-repo install.
+const scope = opt('--scope') === 'global' ? 'global' : 'project';
+const SELF = path.resolve(import.meta.filename);
 
 const BUDGET_MS: Record<string, number> = { 'session-start': 4000, 'post-tool-use': 500, stop: 4000, 'session-end': 1200 };
 
@@ -33,11 +36,14 @@ async function readStdin(timeoutMs = 1000): Promise<any> {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { return {}; }
 }
 
-function repoInfo(cwd: string) {
-  try {
-    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', timeout: 800, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    return { repo: path.basename(top), worktree: top };
-  } catch { return { repo: path.basename(cwd || ''), worktree: '' }; }
+/** Why this hook run should do nothing at all (quietly), or null to proceed. Cheap: env + file reads only. */
+function skipReason(input: any): string | null {
+  if (kanbanDisabled() || process.env.KANBAN_HOOK_DISABLE === '1') return 'disabled';
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || input.cwd || '';
+  if (isIgnored(dataDir, [input.cwd, projectDir])) return 'ignored';
+  // Avoid double hooks: a project that still has the per-project install keeps it; the global copy steps aside.
+  if (scope === 'global' && projectDir && hasProjectInstall(projectDir, SELF)) return 'project-install';
+  return null;
 }
 
 function health(rt: string, patch: Record<string, unknown>) {
@@ -60,10 +66,11 @@ function logEvent(rt: string, sessionId: string, extra: Record<string, unknown> 
 }
 
 async function main() {
-  if (process.env.KANBAN_HOOK_DISABLE === '1') return;
+  if (kanbanDisabled() || process.env.KANBAN_HOOK_DISABLE === '1') return;
   const input = await readStdin();
   const sessionId: string = String(input.session_id || '');
   if (!sessionId) return; // nothing we can attribute
+  if (skipReason(input)) return; // opted out, or a project-scoped install handles this project
   const rt = runtimeDir(dataDir);
   try { await handle(input, sessionId, rt); } finally { logEvent(rt, sessionId, { stopHookActive: input.stop_hook_active ?? undefined, tool: input.tool_name ?? undefined, source: input.source ?? undefined, reason: input.reason ?? undefined }); }
 }
@@ -86,7 +93,7 @@ async function handle(input: any, sessionId: string, rt: string) {
     }
     case 'session-start': {
       recordSessionPid(sessionId, input.cwd ?? '', rt);
-      const { repo, worktree } = repoInfo(input.cwd ?? process.cwd());
+      const { repo, worktree } = resolveProject(input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd());
       const d0 = await drain(outbox, httpSender(url, 1500), 1000).catch(() => null);
       let ctx: any = null;
       let offline = '';

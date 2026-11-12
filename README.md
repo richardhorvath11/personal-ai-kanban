@@ -47,35 +47,67 @@ Open <http://127.0.0.1:4317>. Your real board starts empty.
 
 **Demo isolation.** Each database is stamped with its mode the first time it opens. A real service refuses a demo database and the reverse. Demo seeding is rejected on the real board.
 
-## Connect Claude Code (project-scoped)
+## Connect Claude Code (global: every project, nothing in your repos)
 
-Install the integration into each repository where you want Claude to use the board:
+Install once and the board works in **every** project you open in Claude Code. Nothing is written into any repository, so there is nothing to commit or gitignore at work:
 
 ```bash
-npm run kanban -- install --project /path/to/your/repo [--url http://127.0.0.1:4317] [--data-dir DIR]
+npm run kanban -- install --global [--url http://127.0.0.1:4317] [--data-dir DIR]
+npm run kanban -- status            # what is installed, ignored projects, old per-project installs
 ```
 
-The installer merges the following into that project and never edits `~/.claude/settings.json`:
+`install` with no `--project` does the same thing. It merges into your user-level Claude Code config (locations checked against the Claude Code 2.1.310 docs for [MCP](https://code.claude.com/docs/en/mcp), [hooks](https://code.claude.com/docs/en/hooks) and [memory](https://code.claude.com/docs/en/memory); `CLAUDE_CONFIG_DIR` is honoured):
 
-1. **`.mcp.json`**: adds a `kanban` stdio server (`node <this repo>/src/mcp/server.ts`). Other servers stay as they are.
-2. **`.claude/settings.json`**: adds command hooks in exec form (`command` plus `args`) next to any hooks already there:
-   - `SessionStart` (startup|resume|clear|compact): registers the session, loads context, drains the outbox.
-   - `PostToolUse` (Edit|Write|MultiEdit|NotebookEdit): writes a local "files changed" marker. No network call and no model call.
-   - `Stop`: drains the outbox and sends a sync heartbeat. If files changed since the last confirmed checkpoint, it asks Claude once to record a checkpoint, and only if the work was meaningful.
-   - `SessionEnd`: best-effort session end.
-3. **`CLAUDE.md`**: adds a marked instruction block that tells Claude when to load context, link tasks, checkpoint, and never treat a finished response as Done.
+1. **MCP server, user scope** in `~/.claude.json`, added with `claude mcp add-json --scope user kanban …` (or a direct merge when the `claude` CLI isn't on `PATH`; force either with `--mcp-via cli|file`). User-scope servers need no per-project approval. If a different user-scope server is already called `kanban`, install stops and changes nothing.
+2. **Hooks** in `~/.claude/settings.json`, added next to every hook and setting already there (for example Control's `Stop`/`SessionEnd` hooks), each tagged `--scope global`. They use absolute paths to this checkout's `node` and `src/hooks/hook.ts`.
+3. **Instructions** in a marked block (`<!-- personal-ai-kanban:global:start … -->` … `:end -->`) in `~/.claude/CLAUDE.md`. The block tells Claude to use the board only when the kanban tools are available.
 
-The installer saves a copy of each file it changes in `.claude/kanban-backups/` and lists what it added in `.claude/kanban-install.json`. Opening `claude` interactively in that project asks you to approve the `kanban` MCP server the first time.
+Before changing a file, install saves a copy in `~/.local/share/personal-ai-kanban/backups/global-<timestamp>/` and records what it did in `~/.local/share/personal-ai-kanban/global-install.json`. Running it again changes nothing and never duplicates entries.
 
-Remove the integration:
+**Project labels are automatic.** The hooks resolve the project from the session's directory at run time: the `origin` remote's repository name (`git@github.com:acme/acme-api.git` → `acme-api`), else the main checkout's folder name, so every worktree of a repo gets the same label. The MCP server reads `CLAUDE_PROJECT_DIR`, which Claude Code sets for it, and uses that label when Claude creates a task without one.
+
+**Board offline?** Hooks stay bounded (well under their timeouts), exit 0 and queue updates locally, exactly as before. Coding is never blocked.
+
+### Turning it off for a project, or everywhere
 
 ```bash
+npm run kanban -- ignore ~/work/some-repo     # hooks go silent and the MCP server offers no tools there (and below it)
+npm run kanban -- unignore ~/work/some-repo
+KANBAN_DISABLE=1 claude                       # off for one run: hooks and MCP tools
+KANBAN_HOOK_DISABLE=1 claude                  # hooks only
+```
+
+The ignore list lives in the board's data dir (`ignored-projects.json`), so the repository itself stays untouched.
+
+### Removing it
+
+```bash
+npm run kanban -- uninstall --global
+```
+
+This removes only our hook handlers, the `kanban` user-scope server (`claude mcp remove --scope user kanban`) and the marked block. If a file hasn't changed since install, its original bytes are put back exactly (a file install created is deleted). If you changed it in the meantime, only our entries are removed and your changes stay. The backups are kept.
+
+### Alternative: per-project install
+
+Still supported if you want the board in one repo only:
+
+```bash
+npm run kanban -- install --project /path/to/your/repo [--url …] [--data-dir …]
 npm run kanban -- uninstall --project /path/to/your/repo
 ```
 
-This removes exactly the `kanban` server, our hook handlers and the marked block. Turn the hooks off without uninstalling by setting `KANBAN_HOOK_DISABLE=1`. Turn off every hook for one run with `claude --settings '{"disableAllHooks": true}'`.
+It merges `.mcp.json`, `.claude/settings.json` hooks and a marked `CLAUDE.md` block into that repo, with backups in `.claude/kanban-backups/` and a manifest in `.claude/kanban-install.json`. Claude Code asks you to approve the project `kanban` server the first time. Those files live in the repo, so you would have to commit or gitignore them.
 
-To register only the MCP server without hooks, use `claude mcp add --scope project kanban -e KANBAN_URL=http://127.0.0.1:4317 -- node /path/to/personal-ai-kanban/src/mcp/server.ts`, or run the installer with `--no-hooks`.
+**Both installed?** The project install wins in that project and nothing runs twice. Claude Code loads one `kanban` server by name, and project scope ranks above user scope. The global hooks see the project's install and step aside. `install --global` and `status` list projects Claude Code knows about that still have the per-project install.
+
+### Hooks
+
+- `SessionStart` (startup|resume|clear|compact): registers the session and its project, loads context and drains the outbox.
+- `PostToolUse` (Edit|Write|MultiEdit|NotebookEdit): writes a local "files changed" marker. No network call and no model call.
+- `Stop`: drains the outbox and sends a sync heartbeat. If files changed since the last confirmed checkpoint, it asks Claude once to record a checkpoint, and only if the work was meaningful.
+- `SessionEnd`: best-effort session end.
+
+To turn off every hook for one run: `claude --settings '{"disableAllHooks": true}'`.
 
 ### MCP tools
 
@@ -126,17 +158,20 @@ bash scripts/live-claude-test.sh                  # full integration
 LIVE_NO_CLAUDE_MD=1 LIVE_PORT=4320 bash scripts/live-claude-test.sh   # without the CLAUDE.md block
 ```
 
-Manual version: start the board, `npm run kanban -- install --project <repo>`, open `claude` in that repo, approve the `kanban` server, and describe some work without mentioning the board. Then check that the card's activity shows a `claude` checkpoint, that "switch to <other task>" moves later checkpoints to that card, and that ending the session leaves the status unchanged.
+`scripts/live-claude-global-test.sh` runs the same two turns against the **global** install, from a fresh git project with no kanban or Claude files. It temporarily installs into your real `~/.claude/settings.json`, `~/.claude/CLAUDE.md` and `~/.claude.json`, but points them at a throwaway board on port 4321. It refuses to start while another `claude` process is running and backs up those files first. On exit it always runs `uninstall --global` and diffs every file against its backup. `settings.json` and `CLAUDE.md` must match byte for byte, or they are restored from the backup and the run fails. Claude Code itself updates caches in `~/.claude.json` during any session, so for that file the script requires `mcpServers` to be identical and lists the other keys that changed.
+
+Manual version: start the board, `npm run kanban -- install --global`, open `claude` in any repo, and describe some work without mentioning the board. Then check that the card's activity shows a `claude` checkpoint, that "switch to <other task>" moves later checkpoints to that card, and that ending the session leaves the status unchanged.
 
 ## Architecture
 
 ```
 src/core/      board.ts (domain rules, idempotency, revisions, undo) · sessions.ts · review.ts (attention + next work)
                dates.ts · outbox.ts / deliver.ts (durable queue) · db.ts (migrations) · config.ts · client.ts
+               project.ts (project label from cwd/git remote, ignore list, kill switch)
 src/server/    service.ts (HTTP, loopback, origin guard, static UI) + plugins: sessions, sync, attention, demo
 src/mcp/       server.ts: stdio MCP adapter (official @modelcontextprotocol/sdk), forwards to the service
 src/hooks/     hook.ts: Claude Code lifecycle hook (bounded, offline-tolerant)
-src/cli/       kanban.ts: migrate | export | note | install | uninstall
+src/cli/       install-global.ts (user-scope install) · install.ts (per-project) · kanban.ts: migrate | export | note | install [--global|--project] | uninstall | status | ignore | unignore
 src/ui/        React + Vite UI
 migrations/    001_tasks.sql, 002_sessions.sql, 003_alerts.sql
 test/          integration tests (node:test)

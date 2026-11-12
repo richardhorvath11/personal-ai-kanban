@@ -37,4 +37,4 @@ async function main() {
     }
   }
 }
-await main();
+try { await main(); } catch (e) { console.error(`kanban: ${(e as Error).message}`); process.exitCode = 1; }

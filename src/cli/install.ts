@@ -97,11 +97,11 @@ export function install(project: string, opts: { url?: string; dataDir?: string;
   return manifest;
 }
 
-export function stripBlock(text: string): string {
-  const a = text.indexOf(MARK_START);
-  const b = text.indexOf(MARK_END);
+export function stripBlock(text: string, start = MARK_START, end = MARK_END): string {
+  const a = text.indexOf(start);
+  const b = text.indexOf(end);
   if (a < 0 || b < 0) return text;
-  return (text.slice(0, a).trimEnd() + '\n' + text.slice(b + MARK_END.length).replace(/^\n+/, '')).replace(/^\n+$/, '');
+  return (text.slice(0, a).trimEnd() + '\n' + text.slice(b + end.length).replace(/^\n+/, '')).replace(/^\n+$/, '');
 }
 
 export function uninstall(project: string) {

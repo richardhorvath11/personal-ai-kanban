@@ -1,7 +1,7 @@
 # BUILD_STATUS
 
 ## Current slice
-**All four slices complete** on branch `build/v1`, not merged to `main`, which needs Richard's explicit OK. Slice 4 (attention and priority) is done and the live Claude Code test passed (3 runs).
+**All four slices complete**, plus a **global (user-scope) install** added after Richard's feedback. Work is on branch `build/v1`; `main` is Richard's call. The live Claude Code tests passed: 3 project-scoped runs and 1 global run.
 
 ## Completed behavior
 - SQLite data model (tasks, deps, activity log, idempotency ledger) with numbered migrations in `migrations/`, applied on open and via `npm run migrate`.
@@ -31,6 +31,13 @@
   - **Views:** `get_attention` and the "Needs your attention" view. "Changed since last visit" is also added.
   - Full README covering setup, MCP, project-scoped hook install and uninstall, the live test, and a demo walkthrough.
 
+- **Global install (post-slice 4, Richard's feedback "should just work in any project; no gitignoring at work"):** `src/cli/install-global.ts`, `src/core/project.ts`.
+  - `kanban install --global` (also the default for `install`) and `kanban uninstall --global`. The MCP server goes to user scope in `~/.claude.json` via `claude mcp add-json/remove --scope user`, with a direct-merge fallback. Hooks go into `~/.claude/settings.json`, merged and tagged `--scope global`. Instructions go in a marked block in `~/.claude/CLAUDE.md`. `CLAUDE_CONFIG_DIR` is honoured. Locations were checked against code.claude.com/docs/en/mcp, /hooks and /memory for 2.1.310.
+  - Every existing hook and setting is preserved, and install is idempotent. A timestamped backup and a manifest go in `~/.local/share/personal-ai-kanban/`. Uninstall removes only our entries and restores the original bytes when nothing else changed. It refuses to overwrite a foreign user-scope `kanban` server.
+  - The project label is resolved at run time from the session cwd: the git `origin` remote name, else the main checkout folder (worktree-safe). The MCP adapter uses `CLAUDE_PROJECT_DIR` as the default project for `create_task`.
+  - Opt-outs need no file in the repo: `kanban ignore|unignore <dir>` (stored in `<data>/ignored-projects.json`; hooks go silent and MCP exposes no tools), `KANBAN_DISABLE=1` (hooks and MCP) and `KANBAN_HOOK_DISABLE=1` (hooks only). `kanban status` reports all of it.
+  - Dedupe with the older per-project install: Claude Code loads one `kanban` server by name (project scope wins), and the global hooks no-op in a project that has the per-project hooks or manifest. `install --global` and `status` warn about such projects. `--project` still works.
+
 ## Acceptance scenarios (brief §Acceptance Scenarios)
 
 | # | Scenario | Status | Evidence |
@@ -51,6 +58,8 @@
 - `scripts/live-claude-test.sh` uses `claude` 2.1.310 with the claude.ai subscription login, `ANTHROPIC_API_KEY` unset and `CONTROL_HOOK_DISABLE=1`. Each run uses a throwaway project, data dir and board on port 4319/4320, and runs 2 `claude -p` turns.
 - Run 1 and run 2 (full install) PASS. Run 3 (`LIVE_NO_CLAUDE_MD=1`, so tool descriptions and hook context only) PASS.
 - In every run all hooks fired (session-start ×2, post-tool-use ×2, stop ×2, session-end ×2). Logs: `/tmp/kanban-live-run1.log`, `/tmp/kanban-live-run2-full.log`, `/tmp/kanban-live-run3-nomd.log`.
+
+- **Global install, live:** `scripts/live-claude-global-test.sh` ran on 2026-11-12 at 08:32 CST and PASSED. The project was a fresh git repo with no `.mcp.json`, `.claude` or `CLAUDE.md`; its folder was `acme-export-wt` and its remote was `…/acme-export.git`. The board was separate, on port 4321. `claude mcp get kanban` showed User scope ✔ Connected. All hooks fired (session-start ×2, post-tool-use ×2, stop ×2, session-end ×2). The session registered as repo `acme-export`. Automatic checkpoint, Task switching and Safe completion all PASS, with T-1 and T-2 ending in `review`. After `uninstall --global`, `~/.claude/settings.json` (with Control's hooks) was byte-identical to its backup, and `~/.claude/CLAUDE.md` was absent before and after. In `~/.claude.json`, `mcpServers` was identical. The only other keys that changed were Claude Code's own `cachedGrowthBookFeatures` and `cachedGrowthBookFeaturesAt`. Log: `/tmp/live-global-run.log`.
 
 ## Technical decisions
 - **Node 24 native TypeScript** (type stripping) for service, MCP adapter, hooks and tests: no build step, fast hook start-up. Vite builds only the React UI.
@@ -79,14 +88,22 @@
 - `npm test` → **16 tests, 16 pass, 0 fail** (about 12.6 s). This covers the real temp SQLite, the real MCP stdio transport and real headless Chrome.
 - `bash scripts/live-claude-test.sh` ×3 → PASS (see above).
 
+## Commands actually run (global install)
+- `npx tsc -p .` → no errors.
+- `npm test` → **21 tests, 21 pass, 0 fail**: the 16 earlier tests plus 5 in `test/06-global-install.test.ts`, all with a temp HOME. The new tests cover merge into a home with Control-style hooks, a settings file not in JSON.stringify layout, CLAUDE.md and `.claude.json`; idempotency; a byte-identical restore; uninstall after later user edits; a fresh home left with no files; refusal of a foreign `kanban` server; the real `claude mcp add-json/remove --scope user` CLI; and the installed hook and MCP commands run from an arbitrary project with no kanban files. That last test checks the remote-derived label, ignore/unignore, `KANBAN_DISABLE`, deferring to a per-project install, and the offline queue.
+- `bash scripts/live-claude-global-test.sh` → PASS (see above).
+
 ## Known limitations / unverified
 - **The live Stop-hook nudge is only fixture-verified.** In the live runs Claude checkpointed before the nudge was needed.
 - `resolve_date` time offsets use the zone's offset on that date. Times inside a DST transition hour are not handled specially.
 - Background review runs only while the service runs; there is no OS-level scheduler. Missed intervals are caught up at start-up.
 - Drag and drop works, but the automated tests drive status changes through the keyboard and select, not drag gestures.
 - Work outside instrumented Claude sessions needs `kanban note` or a UI edit.
+- Global install: in an interactive session, Claude Code runs user hooks only after you accept the workspace trust dialog for the folder (documented behaviour). The live test used `claude -p`, which trusts hooks automatically.
+- Global install: `~/.claude.json` can't be restored byte-for-byte after a live session, because Claude Code rewrites its own caches there. Uninstall removes only our server entry and never rolls back Claude Code's own keys.
+- The ignore list matches by path prefix, so ignoring a repo also covers its subfolders. A worktree in another location needs its own `ignore`.
 
 ## Next actions
 1. Richard reviews `build/v1` and decides whether to merge it into `main`.
-2. Install into a real project: `npm run kanban -- install --project <repo>`.
+2. Install it for every project: `npm run kanban -- install --global`. Opt a repo out with `npm run kanban -- ignore <dir>`.
 3. Optional: an OS service unit (systemd user unit) so the board and review run at login.

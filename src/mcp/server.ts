@@ -10,6 +10,8 @@ import type { Task } from '../core/types.ts';
 import { registerSessionTools } from './session-tools.ts';
 import { sendOrQueue } from '../core/deliver.ts';
 import { getOutbox } from './offline.ts';
+import { isIgnored, kanbanDisabled, resolveProject } from '../core/project.ts';
+import { dataDirFromEnv } from '../core/runtime.ts';
 
 export const compact = (t: Task) => ({
   id: t.id, title: t.title, project: t.project, status: t.status, nextAction: t.nextAction || null,
@@ -57,7 +59,7 @@ export const taskFieldsShape = {
   followUpCondition: z.string().max(500).optional(),
 };
 
-export function buildServer(client: KanbanClient) {
+export function buildServer(client: KanbanClient, opts: { defaultProject?: string } = {}) {
   const server = new McpServer({ name: 'personal-ai-kanban', version: '0.1.0' }, {
     instructions: 'Personal kanban board shared across Claude sessions. Read task context before resuming work; record concise checkpoints after meaningful progress, blockers or changed findings. Never mark Done unless the task\'s completion conditions are met (pass completionEvidence) — otherwise use Review.',
   });
@@ -93,6 +95,7 @@ export function buildServer(client: KanbanClient) {
     description: 'Create a durable task. Explicit requests/commitments may be created as ready; tentative ideas go to inbox. Always pass a fresh opId (UUID) and reuse it if you retry, so retries never duplicate.',
     inputSchema: { opId: z.string().min(8).describe('Unique operation ID; reuse on retry'), sessionId: z.string().optional(), sourceNote: z.string().max(500).optional().describe('Short note of the user instruction this came from'), ...taskFieldsShape, title: z.string().min(1).max(300) },
   }, wrap(async ({ opId, sessionId, sourceNote, ...fields }) => {
+    if (!fields.project && opts.defaultProject) fields.project = opts.defaultProject; // label from the session's repository
     const r = await sendOrQueue<{ task: Task; duplicate: boolean }>(client, getOutbox(), 'POST', '/api/tasks', { opId, sessionId, sourceNote, ...fields });
     if (!r.acknowledged) return { acknowledged: false, queued: true, opId: r.opId, warning: r.message };
     return { acknowledged: true, duplicate: r.result!.duplicate, task: compact(r.result!.task) };
@@ -139,8 +142,17 @@ export function buildServer(client: KanbanClient) {
   return server;
 }
 
+/** A server with no tools, for projects that opted out (`kanban ignore`) or when KANBAN_DISABLE=1. */
+export function buildDisabledServer(reason: string) {
+  return new McpServer({ name: 'personal-ai-kanban', version: '0.1.0' }, {
+    instructions: `Personal AI Kanban is turned off here (${reason}). It offers no tools in this session; ignore any kanban instructions.`,
+  });
+}
+
 if (import.meta.main) {
-  const client = new KanbanClient({ client: 'mcp' });
-  const server = buildServer(client);
+  // Claude Code sets CLAUDE_PROJECT_DIR for stdio servers; with a user-scope install it is the only way to know the project.
+  const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  const off = kanbanDisabled() ? 'KANBAN_DISABLE=1' : isIgnored(dataDirFromEnv(), [projectDir]) ? `project ${projectDir} is on the kanban ignore list` : '';
+  const server = off ? buildDisabledServer(off) : buildServer(new KanbanClient({ client: 'mcp' }), { defaultProject: process.env.CLAUDE_PROJECT_DIR ? resolveProject(process.env.CLAUDE_PROJECT_DIR).repo : undefined });
   await server.connect(new StdioServerTransport());
 }
