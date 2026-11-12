@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.kanban-data/
+*.log
+/tmp/

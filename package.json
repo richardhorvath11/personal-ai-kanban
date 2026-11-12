@@ -1,0 +1,49 @@
+{
+  "name": "personal-ai-kanban",
+  "version": "0.1.0",
+  "description": "Local personal kanban kept current by Claude Code via MCP + hooks",
+  "scripts": {
+    "start": "npm run build:ui && node src/server/main.ts",
+    "serve": "node src/server/main.ts",
+    "dev": "node --watch src/server/main.ts",
+    "dev:ui": "vite --config vite.config.ts",
+    "build:ui": "vite build --config vite.config.ts",
+    "demo": "npm run build:ui && KANBAN_MODE=demo node src/server/main.ts --seed-demo",
+    "migrate": "node src/cli/kanban.ts migrate",
+    "export": "node src/cli/kanban.ts export",
+    "mcp": "node src/mcp/server.ts",
+    "kanban": "node src/cli/kanban.ts",
+    "typecheck": "tsc -p .",
+    "test": "node --test --test-concurrency=1 test/*.test.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/richardhorvath11/personal-ai-kanban.git"
+  },
+  "author": "",
+  "license": "UNLICENSED",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/richardhorvath11/personal-ai-kanban/issues"
+  },
+  "homepage": "https://github.com/richardhorvath11/personal-ai-kanban#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "playwright-core": "^1.65.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.18"
+  }
+}
