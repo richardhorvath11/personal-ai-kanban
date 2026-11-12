@@ -114,6 +114,27 @@ export function buildServer(client: KanbanClient) {
     return { duplicate: r.duplicate, revision: r.task.revision, task: compact(r.task) };
   }));
 
+  server.registerTool('get_next_work', {
+    title: 'What should I pick up next?',
+    description: 'Executable next-work candidates with understandable reasons (pins, firm deadlines, dependencies that unblock important work, priority). Blocked work is listed separately and never recommended as executable. Pin conflicts are flagged, not overridden.',
+    inputSchema: { project: z.string().optional() },
+    annotations: { readOnlyHint: true },
+  }, wrap(async (a) => client.get(`/api/next${a.project ? `?project=${encodeURIComponent(a.project)}` : ''}`)));
+
+  server.registerTool('get_attention', {
+    title: 'Needs your attention',
+    description: 'Deadlines at risk, due follow-ups (reminders to check — never contact anyone automatically), neglected in-progress work, pending reviews, blocked items and pin conflicts.',
+    inputSchema: { project: z.string().optional() },
+    annotations: { readOnlyHint: true },
+  }, wrap(async (a) => client.get(`/api/attention${a.project ? `?project=${encodeURIComponent(a.project)}` : ''}`)));
+
+  server.registerTool('resolve_date', {
+    title: 'Resolve a relative date',
+    description: 'Turn wording like "Friday", "tomorrow 3pm" or "in 2 weeks" into an explicit date in the user\'s time zone. If it returns ambiguous, ask the user the returned question instead of guessing.',
+    inputSchema: { text: z.string().min(1).max(100) },
+    annotations: { readOnlyHint: true },
+  }, wrap(async (a) => client.get(`/api/resolve-date?text=${encodeURIComponent(a.text)}`)));
+
   registerSessionTools(server, client);
   return server;
 }

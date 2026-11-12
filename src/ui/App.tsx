@@ -64,11 +64,11 @@ export function App() {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
-      if (e.key === 'Escape') { if (openId) setOpenId(null); else if (creating) setCreating(false); return; }
+      if (e.key === 'Escape') { if (creating) setCreating(false); else if (openId) setOpenId(null); else if (typing) (e.target as HTMLElement).blur(); return; }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === '/') { e.preventDefault(); searchRef.current?.focus(); }
       else if (e.key === 'n') { e.preventDefault(); setCreating(true); }
-      else if (e.key === '?') notify('Keys: n new · / search · arrows move focus · Shift+←/→ move card · Enter open · Esc close · 1-5 views');
+      else if (e.key === '?') notify('Keys: n new · / search · arrows move focus · Shift+←/→ change status · Alt+↑/↓ reorder · Enter open · Esc close · 1-5 views');
       else if ('12345'.includes(e.key)) setView((['board', 'next', 'attention', 'changes', 'archive'] as View[])[Number(e.key) - 1]);
     };
     window.addEventListener('keydown', onKey);
@@ -93,6 +93,17 @@ export function App() {
       await api.edit(t.id, t.revision, patch, extra);
       notify(`${t.id} → ${STATUS_LABEL[status]}`);
     } catch (e) { notify((e as Error).message, 'err'); }
+    void refresh();
+  };
+
+  const reorder = async (t: Task, dir: -1 | 1) => {
+    const col = tasks.filter((x) => x.status === t.status && x.pinned === t.pinned).sort((a, b) => a.position - b.position);
+    const i = col.findIndex((x) => x.id === t.id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= col.length) return;
+    const beyond = col[j + dir];
+    const pos = beyond ? (col[j].position + beyond.position) / 2 : col[j].position + dir;
+    try { await api.edit(t.id, t.revision, { position: pos }); notify(`Moved ${t.id} ${dir < 0 ? 'up' : 'down'}`); } catch (e) { notify((e as Error).message, 'err'); }
     void refresh();
   };
 
@@ -128,12 +139,13 @@ export function App() {
       }} />
       {loadErr && <div className="error-state" role="alert"><strong>Board unavailable.</strong> {loadErr}</div>}
       <main>
-        {view === 'board' && <BoardView tasks={tasks} onOpen={setOpenId} onMove={move} filtered={!!(project || query)} onCreate={() => setCreating(true)} />}
+        {view === 'board' && <BoardView tasks={tasks} onOpen={setOpenId} onMove={move} onReorder={reorder} filtered={!!(project || query)} onCreate={() => setCreating(true)} />}
         {view === 'archive' && <ListView tasks={tasks} onOpen={setOpenId} empty="Nothing archived." />}
         {view === 'next' && <NextView project={project} onOpen={setOpenId} />}
         {view === 'attention' && <AttentionView project={project} onOpen={setOpenId} notify={notify} />}
         {view === 'changes' && <ChangesView onOpen={setOpenId} />}
       </main>
+      <footer className="keys muted">Keyboard: <kbd>n</kbd> new · <kbd>/</kbd> search · arrows move focus · <kbd>Enter</kbd> open · <kbd>Shift</kbd>+←/→ change status · <kbd>Alt</kbd>+↑/↓ reorder · <kbd>Esc</kbd> close · <kbd>1</kbd>–<kbd>5</kbd> views · status also changeable from the detail panel</footer>
       {creating && <CreateDialog projects={projects} defaultProject={project} onClose={() => setCreating(false)} onCreated={(t) => { setCreating(false); notify(`Created ${t.id}`); void refresh(); setOpenId(t.id); }} />}
       {openId && <DetailPanel id={openId} allTasks={tasks} onClose={() => setOpenId(null)} onChanged={refresh} notify={notify} />}
       {toast && <div className={`toast ${toast.kind}`} role="status">{toast.text}</div>}
@@ -155,7 +167,7 @@ function SyncBar({ health, error, onRetry }: { health: any; error: string | null
   );
 }
 
-function Card({ t, onOpen, onMove, focusKey }: { t: Task; onOpen: (id: string) => void; onMove: (t: Task, s: Status) => void; focusKey: string }) {
+function Card({ t, onOpen, onMove, onReorder, focusKey }: { t: Task; onOpen: (id: string) => void; onMove: (t: Task, s: Status) => void; onReorder: (t: Task, d: -1 | 1) => void; focusKey: string }) {
   const idx = STATUSES.indexOf(t.status);
   const dl = deadlineText(t);
   return (
@@ -172,6 +184,7 @@ function Card({ t, onOpen, onMove, focusKey }: { t: Task; onOpen: (id: string) =
         if (e.key === 'Enter') { e.preventDefault(); onOpen(t.id); }
         else if (e.shiftKey && e.key === 'ArrowRight' && idx < STATUSES.length - 1) { e.preventDefault(); onMove(t, STATUSES[idx + 1]); }
         else if (e.shiftKey && e.key === 'ArrowLeft' && idx > 0) { e.preventDefault(); onMove(t, STATUSES[idx - 1]); }
+        else if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); e.stopPropagation(); onReorder(t, e.key === 'ArrowUp' ? -1 : 1); }
       }}
     >
       <div className="card-top"><span className="tid">{t.id}</span>{t.pinned && <span className="pin" title="Pinned by you">📌</span>}{t.project && <span className="tag">{t.project}</span>}{t.priority === 'high' && <span className="tag hi">high</span>}</div>
@@ -185,7 +198,7 @@ function Card({ t, onOpen, onMove, focusKey }: { t: Task; onOpen: (id: string) =
   );
 }
 
-function BoardView({ tasks, onOpen, onMove, filtered, onCreate }: { tasks: Task[]; onOpen: (id: string) => void; onMove: (t: Task, s: Status) => void; filtered: boolean; onCreate: () => void }) {
+function BoardView({ tasks, onOpen, onMove, onReorder, filtered, onCreate }: { tasks: Task[]; onOpen: (id: string) => void; onMove: (t: Task, s: Status) => void; onReorder: (t: Task, d: -1 | 1) => void; filtered: boolean; onCreate: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   if (!tasks.length) {
     return <div className="empty"><h2>{filtered ? 'No tasks match this filter.' : 'Your board is empty.'}</h2>
@@ -193,7 +206,7 @@ function BoardView({ tasks, onOpen, onMove, filtered, onCreate }: { tasks: Task[
       {!filtered && <button className="primary" onClick={onCreate}>+ New task</button>}</div>;
   }
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.shiftKey || !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+    if (e.shiftKey || e.altKey || !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
     const el = document.activeElement as HTMLElement | null;
     const key = el?.dataset.focus;
     if (!key) return;
@@ -221,7 +234,7 @@ function BoardView({ tasks, onOpen, onMove, filtered, onCreate }: { tasks: Task[
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => { const id = e.dataTransfer.getData('text/task-id'); const t = tasks.find((x) => x.id === id); if (t) onMove(t, s); }}>
             <h2>{STATUS_LABEL[s]} <span className="count">{col.length}</span></h2>
-            {col.map((t, ri) => <Card key={t.id} t={t} onOpen={onOpen} onMove={onMove} focusKey={`${ci}:${ri}`} />)}
+            {col.map((t, ri) => <Card key={t.id} t={t} onOpen={onOpen} onMove={onMove} onReorder={onReorder} focusKey={`${ci}:${ri}`} />)}
             {!col.length && <p className="muted col-empty">—</p>}
           </section>
         );

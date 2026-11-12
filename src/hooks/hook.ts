@@ -47,7 +47,17 @@ function health(rt: string, patch: Record<string, unknown>) {
   try { writeAtomic(f, JSON.stringify({ ...cur, ...patch, lastRunAt: new Date().toISOString(), lastEvent: event })); } catch { /* best effort */ }
 }
 
-const out = (v: unknown) => process.stdout.write(JSON.stringify(v));
+let outcome = 'noop';
+const out = (v: unknown) => { outcome = JSON.stringify(v).slice(0, 200); process.stdout.write(JSON.stringify(v)); };
+
+// Small diagnostic event log (event, session, outcome — never prompts or transcripts). Rotated at 1 MB.
+function logEvent(rt: string, sessionId: string, extra: Record<string, unknown> = {}) {
+  try {
+    const f = path.join(rt, 'hook-events.jsonl');
+    if (fs.existsSync(f) && fs.statSync(f).size > 1_000_000) fs.renameSync(f, f + '.1');
+    fs.appendFileSync(f, JSON.stringify({ at: new Date().toISOString(), event, sessionId, outcome, ...extra }) + '\n');
+  } catch { /* best effort */ }
+}
 
 async function main() {
   if (process.env.KANBAN_HOOK_DISABLE === '1') return;
@@ -55,6 +65,10 @@ async function main() {
   const sessionId: string = String(input.session_id || '');
   if (!sessionId) return; // nothing we can attribute
   const rt = runtimeDir(dataDir);
+  try { await handle(input, sessionId, rt); } finally { logEvent(rt, sessionId, { stopHookActive: input.stop_hook_active ?? undefined, tool: input.tool_name ?? undefined, source: input.source ?? undefined, reason: input.reason ?? undefined }); }
+}
+
+async function handle(input: any, sessionId: string, rt: string) {
   const outbox = new Outbox(dataDir);
   const client = new KanbanClient({ baseUrl: url, client: 'hook', timeoutMs: Math.min(1500, BUDGET_MS[event] ?? 1000) });
   const dirtyFile = path.join(rt, 'dirty', `${sessionId.replace(/[^A-Za-z0-9_-]/g, '_')}.json`);

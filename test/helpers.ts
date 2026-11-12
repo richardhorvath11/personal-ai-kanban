@@ -12,7 +12,11 @@ import http from 'node:http';
 // Every child we start is tracked and stopped by exact PID when the test file finishes (pass or fail).
 const live = new Set<ChildProcess>();
 export function track(p: ChildProcess) { live.add(p); p.once('exit', () => live.delete(p)); return p; }
-after(() => { for (const p of live) { try { process.kill(p.pid!, 'SIGKILL'); } catch { /* already gone */ } } });
+const clients = new Set<{ close: () => Promise<void> }>();
+after(async () => {
+  for (const c of clients) await c.close().catch(() => {});
+  for (const p of live) { try { process.kill(p.pid!, 'SIGKILL'); } catch { /* already gone */ } }
+});
 
 /** Raw request with an arbitrary Host header (fetch cannot override Host). */
 export function rawRequest(url: string, p: string, headers: Record<string, string>, method = 'GET'): Promise<number> {
@@ -77,7 +81,9 @@ export async function mcpClient(url: string, extraEnv: Record<string, string> = 
     const parsed = JSON.parse(r.content[0].text);
     return { isError: !!r.isError, data: parsed };
   };
-  return { client, call, close: () => client.close() };
+  const handle = { client, call, close: async () => { clients.delete(handle); await client.close(); } };
+  clients.add(handle);
+  return handle;
 }
 
 /** Browser-like request (sends Origin), as the UI does. */

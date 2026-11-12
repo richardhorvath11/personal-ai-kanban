@@ -1,7 +1,7 @@
 # BUILD_STATUS
 
 ## Current slice
-Slice 3 — Automatic maintenance and recovery: **complete** (fixture-verified; live Claude Code run pending). Next: Slice 4 (attention and priority).
+**All four slices complete** on branch `build/v1`, not merged to `main`, which needs Richard's explicit OK. Slice 4 (attention and priority) is done and the live Claude Code test passed (3 runs).
 
 ## Completed behavior
 - SQLite data model (tasks, deps, activity log, idempotency ledger) with numbered migrations in `migrations/`, applied on open and via `npm run migrate`.
@@ -22,6 +22,35 @@ Slice 3 — Automatic maintenance and recovery: **complete** (fixture-verified; 
   - `SessionEnd`: best-effort session end (queued if offline); no status change.
 - Durable outbox `src/core/outbox.ts`: fsync + atomic rename files with op IDs; deleted only after acknowledgement; rejected ops move to `failed/` and are surfaced in `/api/health` + UI with Retry; the service drains on start-up, every 10 s and on demand. MCP `record_checkpoint` / `create_task` return `acknowledged: false, queued: true` when offline — never a fake success.
 - `kanban note T-n "text"` CLI for manual notes outside instrumented sessions (queues when offline).
+
+- **Slice 4:** these features are implemented in `src/core/review.ts`, `src/core/dates.ts` and `src/server/attention-plugin.ts`, and run by the background review:
+  - **Deadlines:** dates are explicit, firm or flexible, and have a time zone. `resolve_date` turns relative wording ("Friday", "tomorrow 3pm") into an ISO date in the configured time zone. It returns a question for ambiguous wording, such as "next Friday", today's weekday, or "soon".
+  - **Dependency readiness:** tasks waiting only on dependencies move to Ready once those dependencies are Done, with the reason logged.
+  - **Background review:** the review is deterministic, with no model calls. It runs every `reviewIntervalMinutes` and once at start-up to catch up. It flags overdue and soon-due deadlines, due follow-ups, neglected in-progress work (heartbeats don't count as progress), pending reviews, blocked work and pin conflicts. Repeats are consolidated in an `alerts` table (migration 003), and only you can snooze an alert. Each run is recorded in `review_runs`.
+  - **Next work:** `get_next_work`, `/api/next` and the "Pick up next" view rank tasks by an explainable rule tuple: pins in your order, then firm deadline windows, then work that unblocks important commitments, then priority, then work already in progress. Every item shows its reasons. Blocked work is listed separately. With too little context, the view says so instead of inventing a ranking.
+  - **Views:** `get_attention` and the "Needs your attention" view. "Changed since last visit" is also added.
+  - Full README covering setup, MCP, project-scoped hook install and uninstall, the live test, and a demo walkthrough.
+
+## Acceptance scenarios (brief §Acceptance Scenarios)
+
+| # | Scenario | Status | Evidence |
+|---|---|---|---|
+| 1 | Persistent round trip | VERIFIED (automated) | `01`: MCP create → real Chrome UI edit → service restart → MCP read |
+| 2 | Session continuity | VERIFIED (automated) | `02`: a second MCP stdio session after a restart gets the task, latest finding, conditions and next action |
+| 3 | Automatic checkpoint | VERIFIED (live) + fixture | Live: Claude checkpointed T-1 without being asked, in 3/3 runs. Fixture `03`: Stop nudge fires once after edits and not after a checkpoint. The live nudge path never fired, because Claude checkpointed on its own first; live Stop ran and correctly did nothing |
+| 4 | Task switching | VERIFIED (live) + automated | Live: after "switch to the README task" on `--resume`, checkpoints went to T-2 and T-1 was unchanged (3/3). `02`: ambiguity returns candidates |
+| 5 | Retry after outage | VERIFIED (automated) | `03`: the checkpoint queues while the service is down, survives the process exiting, and is applied exactly once after restart |
+| 6 | Concurrent updates | VERIFIED (automated) | `03`: a stale conflicting edit is rejected with the current revision; a retried opId doesn't duplicate |
+| 7 | Priority control | VERIFIED (automated) | `04`: pins persist and come first; explanations name the deadline and dependency; conflicts are flagged |
+| 8 | Waiting and freshness | VERIFIED (automated) | `04`: due follow-up and neglected work surface; heartbeat isn't progress; blocked work isn't recommended |
+| 9 | Safe completion | VERIFIED (live) + automated | Live: Stop and SessionEnd never set Done. In the run without CLAUDE.md, Claude set Done on T-2 with completion evidence, which the rules allow. `03` [fixture]: hooks can't set Done; Done needs conditions plus evidence |
+| 10 | Correction and undo | VERIFIED (automated) | `04` (API) + `05` (UI undo button): undo keeps later edits |
+| 11 | Keyboard and UI states | VERIFIED (automated) | `05`: real Chrome covers keyboard create, move, reorder, empty and error states, and demo isolation |
+
+## Live Claude Code test
+- `scripts/live-claude-test.sh` uses `claude` 2.1.310 with the claude.ai subscription login, `ANTHROPIC_API_KEY` unset and `CONTROL_HOOK_DISABLE=1`. Each run uses a throwaway project, data dir and board on port 4319/4320, and runs 2 `claude -p` turns.
+- Run 1 and run 2 (full install) PASS. Run 3 (`LIVE_NO_CLAUDE_MD=1`, so tool descriptions and hook context only) PASS.
+- In every run all hooks fired (session-start ×2, post-tool-use ×2, stop ×2, session-end ×2). Logs: `/tmp/kanban-live-run1.log`, `/tmp/kanban-live-run2-full.log`, `/tmp/kanban-live-run3-nomd.log`.
 
 ## Technical decisions
 - **Node 24 native TypeScript** (type stripping) for service, MCP adapter, hooks and tests: no build step, fast hook start-up. Vite builds only the React UI.
@@ -45,9 +74,19 @@ Slice 3 — Automatic maintenance and recovery: **complete** (fixture-verified; 
 - `npx tsc -p .` → no errors. `npm test` → 10 tests, 10 pass, 0 fail.
 - Hook checks in `test/03-hooks-recovery.test.ts` are **fixture-based** (real hook processes fed JSON payloads shaped per the hooks reference); they are not a live Claude Code run.
 
+## Commands actually run (slice 4)
+- `npx tsc -p .` → no errors. `npx vite build` → OK.
+- `npm test` → **16 tests, 16 pass, 0 fail** (about 12.6 s). This covers the real temp SQLite, the real MCP stdio transport and real headless Chrome.
+- `bash scripts/live-claude-test.sh` ×3 → PASS (see above).
+
 ## Known limitations / unverified
-- Live Claude Code hook test not yet run. Background review and attention views not built yet (slice 4).
+- **The live Stop-hook nudge is only fixture-verified.** In the live runs Claude checkpointed before the nudge was needed.
+- `resolve_date` time offsets use the zone's offset on that date. Times inside a DST transition hour are not handled specially.
+- Background review runs only while the service runs; there is no OS-level scheduler. Missed intervals are caught up at start-up.
+- Drag and drop works, but the automated tests drive status changes through the keyboard and select, not drag gestures.
+- Work outside instrumented Claude sessions needs `kanban note` or a UI edit.
 
 ## Next actions
-1. Slice 4: deadlines (relative date resolution), dependency readiness, background review (follow-ups, stale, review pending, pin conflicts), next-work explanations, attention view, docs.
-2. Run the live Claude Code test (`scripts/live-claude-test.sh`).
+1. Richard reviews `build/v1` and decides whether to merge it into `main`.
+2. Install into a real project: `npm run kanban -- install --project <repo>`.
+3. Optional: an OS service unit (systemd user unit) so the board and review run at login.
