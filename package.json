@@ -14,7 +14,12 @@
     "mcp": "node src/mcp/server.ts",
     "kanban": "node src/cli/kanban.ts",
     "typecheck": "tsc -p .",
-    "test": "node --test --test-concurrency=1 test/*.test.ts"
+    "test": "node --test --test-concurrency=1 test/*.test.ts",
+    "prestart": "node scripts/check-node.cjs",
+    "preserve": "node scripts/check-node.cjs",
+    "predev": "node scripts/check-node.cjs",
+    "predemo": "node scripts/check-node.cjs",
+    "pretest": "node scripts/check-node.cjs"
   },
   "repository": {
     "type": "git",
